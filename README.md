@@ -13,7 +13,7 @@ Requirements:
 
 Clone this repo and then install requests_oauthlib
 
-    pip install requests_oauthlib
+    pip install requests-oauthlib
 
 ## Running ##
 
