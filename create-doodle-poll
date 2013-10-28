@@ -1,0 +1,139 @@
+#!/usr/bin/env python
+#
+#  Commandline tool to create a doodle event.
+
+import requests
+import os
+import sys
+import xml.etree.cElementTree as ET
+from requests_oauthlib import OAuth1
+from urlparse import parse_qs
+from optparse import OptionParser
+
+class Doodle:
+
+    def __init__(self, consumer_key, consumer_secret, environment='production'):
+        self.consumer_key = consumer_key
+        self.consumer_secret = consumer_secret
+        self.environment = environment
+        self._oauth_setup()
+
+    def _api_url(self, url):
+        """Given a relative URL, return the full API URL on the correct Doodle environment."""
+        if self.environment == 'production':
+            base_url = 'https://doodle.com/api1'
+        elif self.environment == 'test':
+            base_url = 'http://doodle-test.com/api1WithoutAccessControl'
+        else:
+            raise ValueError, 'Unknown environment: %s' % self.environment
+
+        return base_url + url
+
+    def _web_url(self, url):
+        """Given a relative URL, return the full web URL on the correct Doodle environment."""
+        if self.environment == 'production':
+            base_url = 'http://doodle.com/'
+        elif self.environment == 'test':
+            base_url = 'http://doodle-test.com/'
+        else:
+            raise ValueError, 'Unknown environment: %s' % self.environment
+
+        return base_url + url
+
+    def _oauth_setup(self):
+        oauth = OAuth1(self.consumer_key, client_secret=self.consumer_secret)
+        r = requests.get(url=self._api_url('/oauth/requesttoken'), auth=oauth)
+        if r.status_code != 200:
+            raise RuntimeError, "Unexpected http status code from doodle oAuth part 1: %d" % r.status_code
+
+        credentials = parse_qs(r.content)
+        resource_owner_key = credentials.get('oauth_token')[0]
+        resource_owner_secret = credentials.get('oauth_token_secret')[0]
+
+        oauth = OAuth1(self.consumer_key,
+                       client_secret=consumer_secret,
+                       resource_owner_key=resource_owner_key,
+                       resource_owner_secret=resource_owner_secret)
+        r = requests.get(url=self._api_url('/oauth/accesstoken'), auth=oauth)
+        if r.status_code != 200:
+            raise RuntimeError, "Unexpected http status code from doodle oAuth part 2: %d" % r.status_cod
+
+        credentials = parse_qs(r.content)
+
+        self.resource_owner_key = credentials.get('oauth_token')[0]
+        self.resource_owner_secret = credentials.get('oauth_token_secret')[0]
+
+    def create_text_poll(self, title, description, initiator_name, initiator_email, options):
+        """Submits a TEXT type poll to Doodle with two options.
+        Returns the poll url."""
+
+        xmldoc = {}
+        xmldoc['poll'] = ET.Element("poll")
+        xmldoc['poll'].set('xmlns', 'http://doodle.com/xsd1')
+
+        xmldoc['type'] = ET.SubElement(xmldoc['poll'], "type")
+        xmldoc['type'].text = "TEXT"
+
+        xmldoc['levels'] = ET.SubElement(xmldoc['poll'], 'levels')
+        xmldoc['levels'].text = str(len(options))
+
+        xmldoc['title'] = ET.SubElement(xmldoc['poll'], 'title')
+        xmldoc['title'].text = title
+
+        xmldoc['description'] = ET.SubElement(xmldoc['poll'], 'description')
+        xmldoc['description'].text = description
+
+        xmldoc['initiator'] = ET.SubElement(xmldoc['poll'], 'initiator')
+        xmldoc['initiator_name'] = ET.SubElement(xmldoc['initiator'], 'name')
+        xmldoc['initiator_name'].text = initiator_name
+        xmldoc['initiator_email'] = ET.SubElement(xmldoc['initiator'], 'eMailAddress')
+        xmldoc['initiator_email'].text = initiator_email
+
+        xmldoc['options'] = ET.SubElement(xmldoc['poll'], 'options')
+
+        for option in options:
+            xmldoc['option_%s' % option] = ET.SubElement(xmldoc['options'], 'option')
+            xmldoc['option_%s' % option].text = option
+
+        poll = ET.tostring(xmldoc['poll'])
+        headers = {'content-type': 'application/xml'}
+
+        oauth = OAuth1(self.consumer_key,
+                       client_secret=self.consumer_secret,
+                       resource_owner_key=self.resource_owner_key,
+                       resource_owner_secret=self.resource_owner_secret)
+        r = requests.post(self._api_url('/polls'), poll, auth=oauth, headers=headers)
+
+        if r.status_code != 201:
+            sys.stderr.write('%s\n' % r.content)
+            raise RuntimeError, "Unexpected http status code from doodle /polls API: %d" % r.status_code
+
+        poll_url = r.headers['content-location']
+
+        return self._web_url('polls/' + poll_url)
+
+def parse_args():
+    parser = OptionParser()
+
+    parser.add_option('-t', '--title', dest='title')
+    parser.add_option('-d', '--description', dest='description')
+    parser.add_option('-i', '--initiator-email', dest='initiator_email')
+    parser.add_option('-n', '--initiator-name', dest='initiator_name')
+    parser.add_option('-p', '--poll-options', action='append', dest='poll_options')
+    parser.add_option('-e', '--environment', dest='environment', default='production')
+
+    return parser.parse_args()
+    
+
+if __name__ == '__main__':
+
+    (opts, args) = parse_args()
+    consumer_key = os.environ['DOODLE_CONSUMER_KEY']
+    consumer_secret = os.environ['DOODLE_CONSUMER_SECRET']
+
+    doodle = Doodle(consumer_key, consumer_secret, opts.environment)
+    poll_url = doodle.create_text_poll(title=opts.title, description=opts.description, 
+        initiator_name=opts.initiator_name, initiator_email=opts.initiator_email,
+        options=opts.poll_options) 
+
+    print poll_url
